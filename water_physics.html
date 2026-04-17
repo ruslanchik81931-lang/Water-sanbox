@@ -3,228 +3,246 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Физика Воды</title>
+    <title>Симулятор воды</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
         body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
             overflow: hidden;
+            background: #1a1a2e;
+            font-family: Arial, sans-serif;
         }
-        
-        .container {
-            text-align: center;
-        }
-        
-        h1 {
-            color: #4fc3f7;
-            margin-bottom: 10px;
-            text-shadow: 0 0 10px rgba(79, 195, 247, 0.5);
-        }
-        
-        .instructions {
-            color: #b0bec5;
-            margin-bottom: 15px;
-            font-size: 14px;
-        }
-        
         canvas {
-            border: 3px solid #4fc3f7;
-            border-radius: 10px;
-            cursor: crosshair;
-            box-shadow: 0 0 20px rgba(79, 195, 247, 0.3);
-            background: #0a0a0a;
+            display: block;
         }
-        
-        .stats {
-            color: #81d4fa;
-            margin-top: 10px;
-            font-size: 14px;
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+            user-select: none;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>💧 Физика Воды 💧</h1>
-        <p class="instructions">ЛКМ - Налить воду | ПКМ - Убрать воду</p>
-        <canvas id="waterCanvas" width="800" height="600"></canvas>
-        <p class="stats">Частиц воды: <span id="particleCount">0</span></p>
+    <div class="controls">
+        ЛКМ: Налить воду | ПКМ: Убрать воду | Частиц: <span id="count">0</span>/10000
     </div>
+    <canvas id="canvas"></canvas>
 
     <script>
-        const canvas = document.getElementById('waterCanvas');
+        const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
-        const particleCountDisplay = document.getElementById('particleCount');
-        
-        // Параметры симуляции
-        const GRAVITY = 0.5;
-        const FRICTION = 0.98;
-        const BOUNCE = 0.7;
-        const PARTICLE_RADIUS = 4;
-        const SPAWN_RATE = 3;
-        
-        // Массив частиц
+        const countSpan = document.getElementById('count');
+
+        let width, height;
         let particles = [];
+        let mouse = { x: 0, y: 0, leftDown: false, rightDown: false };
         
-        // Состояние мыши
-        let isLeftMouseDown = false;
-        let isRightMouseDown = false;
-        let mouseX = 0;
-        let mouseY = 0;
-        
-        // Класс частицы воды
-        class WaterParticle {
+        // Настройки симуляции
+        const GRAVITY = 0.3;
+        const FRICTION = 0.99;
+        const BOUNCE = 0.3;
+        const PARTICLE_RADIUS = 3.5;
+        const MAX_PARTICLES = 10000;
+        const SPAWN_RATE = 5;
+        const REMOVE_RADIUS = 40;
+        const GRID_SIZE = 20; // Размер ячейки для пространственной сетки
+
+        // Пространственная сетка для оптимизации коллизий
+        let grid = {};
+
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        class Particle {
             constructor(x, y) {
                 this.x = x;
                 this.y = y;
                 this.vx = (Math.random() - 0.5) * 4;
-                this.vy = Math.random() * 2;
-                this.radius = PARTICLE_RADIUS + Math.random() * 2;
-                this.color = `hsl(${200 + Math.random() * 40}, ${70 + Math.random() * 30}%, ${50 + Math.random() * 20}%)`;
+                this.vy = (Math.random() - 0.5) * 4;
+                this.radius = PARTICLE_RADIUS;
+                const shade = 140 + Math.random() * 60;
+                this.color = `hsl(200, 85%, ${40 + Math.random() * 20}%)`;
             }
-            
+
             update() {
-                // Применяем гравитацию
                 this.vy += GRAVITY;
-                
-                // Применяем трение
                 this.vx *= FRICTION;
                 this.vy *= FRICTION;
-                
-                // Обновляем позицию
                 this.x += this.vx;
                 this.y += this.vy;
-                
-                // Проверка столкновений с границами
-                if (this.x - this.radius < 0) {
-                    this.x = this.radius;
-                    this.vx *= -BOUNCE;
-                }
-                if (this.x + this.radius > canvas.width) {
-                    this.x = canvas.width - this.radius;
-                    this.vx *= -BOUNCE;
-                }
-                if (this.y + this.radius > canvas.height) {
-                    this.y = canvas.height - this.radius;
+
+                // Границы
+                if (this.y + this.radius > height) {
+                    this.y = height - this.radius;
                     this.vy *= -BOUNCE;
-                    this.vx *= 0.95; // Дополнительное трение о дно
-                }
-                if (this.y - this.radius < 0) {
+                    this.vx += (Math.random() - 0.5) * 0.3;
+                } else if (this.y - this.radius < 0) {
                     this.y = this.radius;
                     this.vy *= -BOUNCE;
                 }
+                
+                if (this.x + this.radius > width) {
+                    this.x = width - this.radius;
+                    this.vx *= -BOUNCE;
+                } else if (this.x - this.radius < 0) {
+                    this.x = this.radius;
+                    this.vx *= -BOUNCE;
+                }
             }
-            
+
             draw() {
                 ctx.beginPath();
                 ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
                 ctx.fillStyle = this.color;
                 ctx.fill();
-                
-                // Добавляем блик
-                ctx.beginPath();
-                ctx.arc(this.x - this.radius * 0.3, this.y - this.radius * 0.3, 
-                       this.radius * 0.4, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-                ctx.fill();
+            }
+
+            getGridKey() {
+                const gx = Math.floor(this.x / GRID_SIZE);
+                const gy = Math.floor(this.y / GRID_SIZE);
+                return `${gx},${gy}`;
             }
         }
-        
-        // Обработчики событий мыши
-        canvas.addEventListener('mousedown', (e) => {
-            if (e.button === 0) {
-                isLeftMouseDown = true;
-            } else if (e.button === 2) {
-                isRightMouseDown = true;
+
+        function buildGrid() {
+            grid = {};
+            for (let i = 0; i < particles.length; i++) {
+                const key = particles[i].getGridKey();
+                if (!grid[key]) grid[key] = [];
+                grid[key].push(i);
             }
-            e.preventDefault();
-        });
-        
-        canvas.addEventListener('mouseup', (e) => {
-            if (e.button === 0) {
-                isLeftMouseDown = false;
-            } else if (e.button === 2) {
-                isRightMouseDown = false;
-            }
-        });
-        
-        canvas.addEventListener('mousemove', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            mouseX = e.clientX - rect.left;
-            mouseY = e.clientY - rect.top;
-        });
-        
-        canvas.addEventListener('mouseleave', () => {
-            isLeftMouseDown = false;
-            isRightMouseDown = false;
-        });
-        
-        // Отключаем контекстное меню на ПКМ
-        canvas.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-        });
-        
-        // Основной цикл игры
-        function gameLoop() {
-            // Очищаем холст с полупрозрачным фоном для эффекта шлейфа
-            ctx.fillStyle = 'rgba(10, 10, 10, 0.3)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function resolveCollisions() {
+            buildGrid();
             
-            // Добавляем частицы при зажатой ЛКМ
-            if (isLeftMouseDown) {
-                for (let i = 0; i < SPAWN_RATE; i++) {
-                    const offsetX = (Math.random() - 0.5) * 20;
-                    const offsetY = (Math.random() - 0.5) * 20;
-                    particles.push(new WaterParticle(mouseX + offsetX, mouseY + offsetY));
+            const minDist = PARTICLE_RADIUS * 2;
+            const minDistSq = minDist * minDist;
+
+            for (let i = 0; i < particles.length; i++) {
+                const p1 = particles[i];
+                const gx = Math.floor(p1.x / GRID_SIZE);
+                const gy = Math.floor(p1.y / GRID_SIZE);
+
+                // Проверяем соседние ячейки
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        const key = `${gx + dx},${gy + dy}`;
+                        const cell = grid[key];
+                        if (!cell) continue;
+
+                        for (const j of cell) {
+                            if (i >= j) continue;
+                            
+                            const p2 = particles[j];
+                            const ddx = p1.x - p2.x;
+                            const ddy = p1.y - p2.y;
+                            const distSq = ddx * ddx + ddy * ddy;
+
+                            if (distSq < minDistSq && distSq > 0) {
+                                const dist = Math.sqrt(distSq);
+                                const overlap = minDist - dist;
+                                const nx = ddx / dist;
+                                const ny = ddy / dist;
+
+                                // Разделяем частицы
+                                const force = overlap * 0.5;
+                                p1.x += nx * force;
+                                p1.y += ny * force;
+                                p2.x -= nx * force;
+                                p2.y -= ny * force;
+
+                                // Обмен импульсом
+                                const dvx = p1.vx - p2.vx;
+                                const dvy = p1.vy - p2.vy;
+                                const dvn = dvx * nx + dvy * ny;
+                                
+                                if (dvn > 0) {
+                                    const impulse = dvn * 0.5;
+                                    p1.vx -= nx * impulse;
+                                    p1.vy -= ny * impulse;
+                                    p2.vx += nx * impulse;
+                                    p2.vy += ny * impulse;
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            
-            // Удаляем частицы при зажатой ПКМ
-            if (isRightMouseDown) {
-                const removeRadius = 50;
-                particles = particles.filter(particle => {
-                    const dx = particle.x - mouseX;
-                    const dy = particle.y - mouseY;
-                    const distance = Math.sqrt(dx * dx + dy * dy);
-                    return distance > removeRadius;
-                });
-                
-                // Рисуем индикатор удаления
-                ctx.beginPath();
-                ctx.arc(mouseX, mouseY, removeRadius, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(255, 100, 100, 0.5)';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-            }
-            
-            // Обновляем и рисуем все частицы
-            particles.forEach(particle => {
-                particle.update();
-                particle.draw();
-            });
-            
-            // Ограничиваем количество частиц для производительности
-            if (particles.length > 2000) {
-                particles = particles.slice(particles.length - 2000);
-            }
-            
-            // Обновляем счетчик
-            particleCountDisplay.textContent = particles.length;
-            
-            requestAnimationFrame(gameLoop);
         }
-        
-        // Запускаем игру
-        gameLoop();
+
+        canvas.addEventListener('mousedown', e => {
+            if (e.button === 0) mouse.leftDown = true;
+            if (e.button === 2) mouse.rightDown = true;
+            updateMouse(e);
+        });
+        canvas.addEventListener('mouseup', e => {
+            if (e.button === 0) mouse.leftDown = false;
+            if (e.button === 2) mouse.rightDown = false;
+        });
+        canvas.addEventListener('mousemove', updateMouse);
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        function updateMouse(e) {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        }
+
+        function loop() {
+            ctx.clearRect(0, 0, width, height);
+
+            // Спавн (ЛКМ)
+            if (mouse.leftDown && particles.length < MAX_PARTICLES) {
+                for (let i = 0; i < SPAWN_RATE; i++) {
+                    if (particles.length >= MAX_PARTICLES) break;
+                    const offsetX = (Math.random() - 0.5) * 25;
+                    const offsetY = (Math.random() - 0.5) * 25;
+                    particles.push(new Particle(mouse.x + offsetX, mouse.y + offsetY));
+                }
+            }
+
+            // Удаление (ПКМ)
+            if (mouse.rightDown) {
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    const dx = p.x - mouse.x;
+                    const dy = p.y - mouse.y;
+                    if (dx*dx + dy*dy < REMOVE_RADIUS * REMOVE_RADIUS) {
+                        particles.splice(i, 1);
+                    }
+                }
+            }
+
+            // Физика: несколько подшагов для стабильности
+            const substeps = 2;
+            for (let s = 0; s < substeps; s++) {
+                resolveCollisions();
+                for (const p of particles) {
+                    p.update();
+                }
+            }
+
+            // Отрисовка
+            for (const p of particles) {
+                p.draw();
+            }
+
+            countSpan.textContent = particles.length;
+            requestAnimationFrame(loop);
+        }
+
+        loop();
     </script>
 </body>
 </html>
