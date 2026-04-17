@@ -2,238 +2,274 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Реалистичная Физика Воды (Grid-Based)</title>
+    <title>Реалистичная Физика Воды</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; }
-        canvas { display: block; image-rendering: pixelated; }
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            color: #fff;
+            font-family: sans-serif;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
         #ui {
             position: absolute;
             top: 10px;
             left: 10px;
-            color: white;
             background: rgba(0, 0, 0, 0.5);
             padding: 10px;
             border-radius: 8px;
             pointer-events: none;
-            user-select: none;
         }
     </style>
 </head>
 <body>
-<div id="ui">
-    <h3>Управление:</h3>
-    <p>🖱️ <b>ЛКМ</b>: Налить воду</p>
-    <p>🖱️ <b>ПКМ</b>: Убрать воду</p>
-    <p>💧 Заполнено: <span id="count">0</span>%</p>
-</div>
-<canvas id="canvas"></canvas>
+    <div id="ui">
+        <h3>Управление:</h3>
+        <p>ЛКМ — Налить воду</p>
+        <p>ПКМ — Убрать воду</p>
+        <p>Частиц: <span id="count">0</span></p>
+    </div>
+    <canvas id="sim"></canvas>
 
 <script>
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d', { alpha: false });
-const countSpan = document.getElementById('count');
+    const canvas = document.getElementById('sim');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const countSpan = document.getElementById('count');
 
-let width, height;
-let cols, rows;
-const scale = 6; // Размер клетки (чем меньше, тем детальнее, но тяжелее)
-
-// Типы клеток: 0 - пусто, >0 - уровень воды
-let grid = [];
-let newGrid = [];
-
-// Параметры
-const maxWater = 255; // Максимальное количество воды в клетке
-const flowSpeed = 0.8; // Скорость растекания
-
-// Мышь
-const mouse = { x: 0, y: 0, leftDown: false, rightDown: false };
-const brushSize = 3; // Радиус кисти в клетках
-
-function resize() {
-    width = window.innerWidth;
-    height = window.innerHeight;
-    canvas.width = width;
-    canvas.height = height;
+    // Настройки симуляции
+    const SCALE = 4; // Размер клетки в пикселях
+    let cols, rows;
     
-    cols = Math.ceil(width / scale);
-    rows = Math.ceil(height / scale);
+    // Две сетки: текущая и следующая для двойной буферизации
+    let grid;
+    let nextGrid;
     
-    const total = cols * rows;
-    grid = new Uint8Array(total);
-    newGrid = new Uint8Array(total);
-}
+    const WATER_COLOR = [30, 144, 255];
+    
+    let isMouseDown = false;
+    let isRightClick = false;
+    let mouseX = 0;
+    let mouseY = 0;
 
-window.addEventListener('resize', resize);
-resize();
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+        cols = Math.ceil(canvas.width / SCALE);
+        rows = Math.ceil(canvas.height / SCALE);
+        
+        // Создаем новые массивы при изменении размера
+        grid = new Uint8Array(cols * rows);
+        nextGrid = new Uint8Array(cols * rows);
+        
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
 
-// Управление
-canvas.addEventListener('mousedown', e => {
-    if (e.button === 0) mouse.leftDown = true;
-    if (e.button === 2) mouse.rightDown = true;
-});
-canvas.addEventListener('mouseup', e => {
-    if (e.button === 0) mouse.leftDown = false;
-    if (e.button === 2) mouse.rightDown = false;
-});
-canvas.addEventListener('contextmenu', e => e.preventDefault());
-canvas.addEventListener('mousemove', e => {
-    mouse.x = e.clientX;
-    mouse.y = e.clientY;
-});
+    window.addEventListener('resize', resize);
+    resize();
 
-function getIndex(x, y) {
-    if (x < 0 || x >= cols || y < 0 || y >= rows) return -1;
-    return y * cols + x;
-}
+    canvas.addEventListener('mousedown', e => {
+        if (e.button === 0) isMouseDown = true;
+        if (e.button === 2) isRightClick = true;
+        updateMouse(e);
+    });
+    
+    window.addEventListener('mouseup', () => {
+        isMouseDown = false;
+        isRightClick = false;
+    });
+    
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    
+    canvas.addEventListener('mousemove', e => {
+        updateMouse(e);
+    });
 
-function updatePhysics() {
-    // Копируем текущее состояние в новый буфер
-    newGrid.set(grid);
+    function updateMouse(e) {
+        const rect = canvas.getBoundingClientRect();
+        mouseX = Math.floor((e.clientX - rect.left) / SCALE);
+        mouseY = Math.floor((e.clientY - rect.top) / SCALE);
+    }
 
-    let totalWater = 0;
-
-    // Проходим снизу вверх, чтобы вода падала корректно за один кадр
-    // Чередование направления прохода по X для симметрии потока
-    for (let y = rows - 1; y >= 0; y--) {
-        const startX = (y % 2 === 0) ? 0 : cols - 1;
-        const endX = (y % 2 === 0) ? cols : -1;
-        const stepX = (y % 2 === 0) ? 1 : -1;
-
-        for (let x = startX; x !== endX; x += stepX) {
-            const idx = y * cols + x;
-            let amount = grid[idx];
-            
-            if (amount === 0) continue;
-            
-            totalWater += amount;
-
-            // 1. Попытка двигаться вниз
-            const downIdx = getIndex(x, y + 1);
-            if (downIdx !== -1) {
-                const downAmount = grid[downIdx];
-                if (downAmount < maxWater) {
-                    const space = maxWater - downAmount;
-                    const transfer = Math.min(amount, space, Math.ceil(amount * flowSpeed));
-                    
-                    newGrid[downIdx] += transfer;
-                    newGrid[idx] -= transfer;
-                    amount = newGrid[idx];
-                }
-            }
-
-            // 2. Если внизу занято, растекаемся в стороны и по диагонали
-            if (amount > 0) {
-                const dirs = [
-                    { dx: -1, dy: 1 }, // Вниз-влево
-                    { dx: 1, dy: 1 },  // Вниз-вправо
-                    { dx: -1, dy: 0 }, // Влево
-                    { dx: 1, dy: 0 }   // Вправо
-                ];
-
-                // Случайный порядок сторон, чтобы вода не текла только влево
-                if (Math.random() > 0.5) {
-                    dirs[2].dx = 1; dirs[3].dx = -1;
-                }
-
-                for (let d of dirs) {
-                    if (amount <= 0) break;
-                    
-                    const nx = x + d.dx;
-                    const ny = y + d.dy;
-                    const nIdx = getIndex(nx, ny);
-                    
-                    if (nIdx !== -1) {
-                        const nAmount = newGrid[nIdx];
-                        
-                        let canFlow = false;
-                        if (d.dy === 1) {
-                            // Вниз-вбок течет, если есть место
-                            if (nAmount < maxWater) canFlow = true;
-                        } else {
-                            // По горизонтали течет, если сосед пустее
-                            if (nAmount < amount) canFlow = true;
-                        }
-
-                        if (canFlow) {
-                            const space = maxWater - nAmount;
-                            const factor = (d.dy === 1) ? 0.8 : 0.4; 
-                            const transfer = Math.min(amount, space, Math.ceil(amount * factor));
-                            
-                            if (transfer > 0) {
-                                newGrid[nIdx] += transfer;
-                                newGrid[idx] -= transfer;
-                                amount = newGrid[idx];
+    function update() {
+        // 1. Обработка ввода (добавление/удаление воды)
+        const brushSize = 3;
+        if (isMouseDown || isRightClick) {
+            for (let y = -brushSize; y <= brushSize; y++) {
+                for (let x = -brushSize; x <= brushSize; x++) {
+                    if (x*x + y*y <= brushSize*brushSize) {
+                        const cx = mouseX + x;
+                        const cy = mouseY + y;
+                        if (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+                            const idx = cy * cols + cx;
+                            if (isRightClick) {
+                                grid[idx] = 0; // Удаляем воду
+                            } else {
+                                // Добавляем воду (с небольшим разбросом для естественности)
+                                if (Math.random() > 0.1) grid[idx] = 1;
                             }
                         }
                     }
                 }
             }
         }
-    }
 
-    // Обновляем основной грид
-    grid.set(newGrid);
-    
-    // Статистика
-    const maxTotal = cols * rows * maxWater;
-    const percent = ((totalWater / maxTotal) * 100).toFixed(2);
-    countSpan.innerText = percent;
-}
+        // 2. Симуляция физики воды
+        // Ключевые моменты для правильной работы:
+        // - Обрабатываем сетку СНИЗУ ВВЕРХ (от rows-1 до 0), чтобы вода падала корректно
+        // - Используем двойной буфер (nextGrid), чтобы изменения в текущем кадре не влияли на другие частицы в этом же кадре
+        // - Чередование направления сканирования по X предотвращает смещение воды в одну сторону
+        
+        const frame = Date.now();
+        const direction = (frame % 2000 < 1000) ? 1 : -1; // Меняем направление каждые полсекунды
+        
+        let activeParticles = 0;
+        
+        // Очищаем следующую сетку
+        nextGrid.fill(0);
 
-function handleInput() {
-    const cx = Math.floor(mouse.x / scale);
-    const cy = Math.floor(mouse.y / scale);
-    const r = brushSize;
+        // Проходим по всем ячейкам снизу вверх
+        for (let y = rows - 1; y >= 0; y--) {
+            // Определяем порядок обхода по X (слева-направо или справа-налево)
+            const startX = (direction === 1) ? 0 : cols - 1;
+            const stepX = direction;
 
-    for (let y = -r; y <= r; y++) {
-        for (let x = -r; x <= r; x++) {
-            if (x*x + y*y > r*r) continue;
-            
-            const nx = cx + x;
-            const ny = cy + y;
-            const idx = getIndex(nx, ny);
-            
-            if (idx !== -1) {
-                if (mouse.leftDown) {
-                    grid[idx] = Math.min(maxWater, grid[idx] + 40);
-                } else if (mouse.rightDown) {
-                    grid[idx] = 0;
+            for (let i = 0; i < cols; i++) {
+                const x = startX + (i * stepX);
+                const idx = y * cols + x;
+                
+                // Если в этой ячейке есть вода
+                if (grid[idx] === 1) {
+                    activeParticles++;
+                    let moved = false;
+
+                    // ПРИОРИТЕТ 1: Падение вниз
+                    if (y + 1 < rows) {
+                        const belowIdx = (y + 1) * cols + x;
+                        // Проверяем, что внизу пусто и в следующей сетке туда еще ничего не записали
+                        if (grid[belowIdx] === 0 && nextGrid[belowIdx] === 0) {
+                            nextGrid[belowIdx] = 1;
+                            moved = true;
+                        }
+                    }
+
+                    // ПРИОРИТЕТ 2: Скатывание по диагонали (вниз-влево или вниз-вправо)
+                    if (!moved) {
+                        // Случайный выбор направления для естественности
+                        const dirOffset = (Math.random() < 0.5) ? -1 : 1;
+                        const check1 = x + dirOffset;
+                        const check2 = x - dirOffset;
+
+                        if (y + 1 < rows) {
+                            // Пробуем первое направление
+                            if (check1 >= 0 && check1 < cols) {
+                                const diag1 = (y + 1) * cols + check1;
+                                if (grid[diag1] === 0 && nextGrid[diag1] === 0) {
+                                    nextGrid[diag1] = 1;
+                                    moved = true;
+                                }
+                            }
+                            
+                            // Если не получилось, пробуем второе направление
+                            if (!moved && check2 >= 0 && check2 < cols) {
+                                const diag2 = (y + 1) * cols + check2;
+                                if (grid[diag2] === 0 && nextGrid[diag2] === 0) {
+                                    nextGrid[diag2] = 1;
+                                    moved = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // ПРИОРИТЕТ 3: Растекание в стороны (если внизу препятствие)
+                    if (!moved) {
+                        const sideOffset = (Math.random() < 0.5) ? -1 : 1;
+                        const s1 = x + sideOffset;
+                        const s2 = x - sideOffset;
+
+                        // Пробуем первое направление
+                        if (s1 >= 0 && s1 < cols) {
+                            const side1 = y * cols + s1;
+                            if (grid[side1] === 0 && nextGrid[side1] === 0) {
+                                nextGrid[side1] = 1;
+                                moved = true;
+                            }
+                        }
+                        
+                        // Если не получилось, пробуем второе направление
+                        if (!moved && s2 >= 0 && s2 < cols) {
+                            const side2 = y * cols + s2;
+                            if (grid[side2] === 0 && nextGrid[side2] === 0) {
+                                nextGrid[side2] = 1;
+                                moved = true;
+                            }
+                        }
+                    }
+
+                    // Если никуда не переместились, вода остается на месте
+                    if (!moved) {
+                        nextGrid[idx] = 1;
+                    }
                 }
             }
         }
+
+        // Меняем сетки местами: nextGrid становится текущей grid
+        let temp = grid;
+        grid = nextGrid;
+        nextGrid = temp;
+
+        countSpan.innerText = activeParticles;
     }
-}
+    
+    // Оптимизированная отрисовка через Offscreen Canvas
+    const offCanvas = document.createElement('canvas');
+    const offCtx = offCanvas.getContext('2d');
+    
+    function render() {
+        // Синхронизируем размеры оффскрин-канваса с логической сеткой
+        if (offCanvas.width !== cols || offCanvas.height !== rows) {
+            offCanvas.width = cols;
+            offCanvas.height = rows;
+        }
 
-function render() {
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, 0, width, height);
+        const imgData = offCtx.createImageData(cols, rows);
+        const data = imgData.data;
 
-    for (let y = 0; y < rows; y++) {
-        for (let x = 0; x < cols; x++) {
-            const idx = y * cols + x;
-            const val = grid[idx];
-            
-            if (val > 0) {
-                const ratio = val / maxWater;
-                const r = Math.floor(20 + ratio * 30);
-                const g = Math.floor(100 + ratio * 80);
-                const b = 255;
-                
-                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                ctx.fillRect(x * scale, y * scale, scale, scale + 0.5);
+        // Заполняем пиксели водой
+        for (let i = 0; i < grid.length; i++) {
+            if (grid[i] === 1) {
+                const idx = i * 4;
+                data[idx] = WATER_COLOR[0];     // R
+                data[idx + 1] = WATER_COLOR[1]; // G
+                data[idx + 2] = WATER_COLOR[2]; // B
+                data[idx + 3] = 255;            // Alpha
+            } else {
+                const idx = i * 4;
+                data[idx + 3] = 0; // Прозрачный фон
             }
         }
+
+        offCtx.putImageData(imgData, 0, 0);
+
+        // Растягиваем маленькую сетку на весь экран
+        ctx.imageSmoothingEnabled = false; 
+        ctx.drawImage(offCanvas, 0, 0, canvas.width, canvas.height);
     }
-}
 
-function loop() {
-    handleInput();
-    updatePhysics();
-    render();
-    requestAnimationFrame(loop);
-}
+    function loop() {
+        update();
+        render();
+        requestAnimationFrame(loop);
+    }
 
-loop();
+    loop();
+
 </script>
 </body>
 </html>
