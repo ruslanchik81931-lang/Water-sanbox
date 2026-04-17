@@ -2,247 +2,238 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Симулятор воды</title>
+    <title>Реалистичная Физика Воды (Grid-Based)</title>
     <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-            background: #1a1a2e;
-            font-family: Arial, sans-serif;
-        }
-        canvas {
-            display: block;
-        }
-        .controls {
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; }
+        canvas { display: block; image-rendering: pixelated; }
+        #ui {
             position: absolute;
             top: 10px;
             left: 10px;
             color: white;
             background: rgba(0, 0, 0, 0.5);
             padding: 10px;
-            border-radius: 5px;
+            border-radius: 8px;
             pointer-events: none;
             user-select: none;
         }
     </style>
 </head>
 <body>
-    <div class="controls">
-        ЛКМ: Налить воду | ПКМ: Убрать воду | Частиц: <span id="count">0</span>/10000
-    </div>
-    <canvas id="canvas"></canvas>
+<div id="ui">
+    <h3>Управление:</h3>
+    <p>🖱️ <b>ЛКМ</b>: Налить воду</p>
+    <p>🖱️ <b>ПКМ</b>: Убрать воду</p>
+    <p>💧 Заполнено: <span id="count">0</span>%</p>
+</div>
+<canvas id="canvas"></canvas>
 
-    <script>
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        const countSpan = document.getElementById('count');
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+const countSpan = document.getElementById('count');
 
-        let width, height;
-        let particles = [];
-        let mouse = { x: 0, y: 0, leftDown: false, rightDown: false };
-        
-        // Настройки симуляции
-        const GRAVITY = 0.3;
-        const FRICTION = 0.99;
-        const BOUNCE = 0.3;
-        const PARTICLE_RADIUS = 3.5;
-        const MAX_PARTICLES = 10000;
-        const SPAWN_RATE = 5;
-        const REMOVE_RADIUS = 40;
-        const GRID_SIZE = 20; // Размер ячейки для пространственной сетки
+let width, height;
+let cols, rows;
+const scale = 6; // Размер клетки (чем меньше, тем детальнее, но тяжелее)
 
-        // Пространственная сетка для оптимизации коллизий
-        let grid = {};
+// Типы клеток: 0 - пусто, >0 - уровень воды
+let grid = [];
+let newGrid = [];
 
-        function resize() {
-            width = window.innerWidth;
-            height = window.innerHeight;
-            canvas.width = width;
-            canvas.height = height;
-        }
-        window.addEventListener('resize', resize);
-        resize();
+// Параметры
+const maxWater = 255; // Максимальное количество воды в клетке
+const flowSpeed = 0.8; // Скорость растекания
 
-        class Particle {
-            constructor(x, y) {
-                this.x = x;
-                this.y = y;
-                this.vx = (Math.random() - 0.5) * 4;
-                this.vy = (Math.random() - 0.5) * 4;
-                this.radius = PARTICLE_RADIUS;
-                const shade = 140 + Math.random() * 60;
-                this.color = `hsl(200, 85%, ${40 + Math.random() * 20}%)`;
-            }
+// Мышь
+const mouse = { x: 0, y: 0, leftDown: false, rightDown: false };
+const brushSize = 3; // Радиус кисти в клетках
 
-            update() {
-                this.vy += GRAVITY;
-                this.vx *= FRICTION;
-                this.vy *= FRICTION;
-                this.x += this.vx;
-                this.y += this.vy;
+function resize() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+    
+    cols = Math.ceil(width / scale);
+    rows = Math.ceil(height / scale);
+    
+    const total = cols * rows;
+    grid = new Uint8Array(total);
+    newGrid = new Uint8Array(total);
+}
 
-                // Границы
-                if (this.y + this.radius > height) {
-                    this.y = height - this.radius;
-                    this.vy *= -BOUNCE;
-                    this.vx += (Math.random() - 0.5) * 0.3;
-                } else if (this.y - this.radius < 0) {
-                    this.y = this.radius;
-                    this.vy *= -BOUNCE;
-                }
-                
-                if (this.x + this.radius > width) {
-                    this.x = width - this.radius;
-                    this.vx *= -BOUNCE;
-                } else if (this.x - this.radius < 0) {
-                    this.x = this.radius;
-                    this.vx *= -BOUNCE;
-                }
-            }
+window.addEventListener('resize', resize);
+resize();
 
-            draw() {
-                ctx.beginPath();
-                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-                ctx.fillStyle = this.color;
-                ctx.fill();
-            }
+// Управление
+canvas.addEventListener('mousedown', e => {
+    if (e.button === 0) mouse.leftDown = true;
+    if (e.button === 2) mouse.rightDown = true;
+});
+canvas.addEventListener('mouseup', e => {
+    if (e.button === 0) mouse.leftDown = false;
+    if (e.button === 2) mouse.rightDown = false;
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('mousemove', e => {
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
+});
 
-            getGridKey() {
-                const gx = Math.floor(this.x / GRID_SIZE);
-                const gy = Math.floor(this.y / GRID_SIZE);
-                return `${gx},${gy}`;
-            }
-        }
+function getIndex(x, y) {
+    if (x < 0 || x >= cols || y < 0 || y >= rows) return -1;
+    return y * cols + x;
+}
 
-        function buildGrid() {
-            grid = {};
-            for (let i = 0; i < particles.length; i++) {
-                const key = particles[i].getGridKey();
-                if (!grid[key]) grid[key] = [];
-                grid[key].push(i);
-            }
-        }
+function updatePhysics() {
+    // Копируем текущее состояние в новый буфер
+    newGrid.set(grid);
 
-        function resolveCollisions() {
-            buildGrid();
+    let totalWater = 0;
+
+    // Проходим снизу вверх, чтобы вода падала корректно за один кадр
+    // Чередование направления прохода по X для симметрии потока
+    for (let y = rows - 1; y >= 0; y--) {
+        const startX = (y % 2 === 0) ? 0 : cols - 1;
+        const endX = (y % 2 === 0) ? cols : -1;
+        const stepX = (y % 2 === 0) ? 1 : -1;
+
+        for (let x = startX; x !== endX; x += stepX) {
+            const idx = y * cols + x;
+            let amount = grid[idx];
             
-            const minDist = PARTICLE_RADIUS * 2;
-            const minDistSq = minDist * minDist;
+            if (amount === 0) continue;
+            
+            totalWater += amount;
 
-            for (let i = 0; i < particles.length; i++) {
-                const p1 = particles[i];
-                const gx = Math.floor(p1.x / GRID_SIZE);
-                const gy = Math.floor(p1.y / GRID_SIZE);
+            // 1. Попытка двигаться вниз
+            const downIdx = getIndex(x, y + 1);
+            if (downIdx !== -1) {
+                const downAmount = grid[downIdx];
+                if (downAmount < maxWater) {
+                    const space = maxWater - downAmount;
+                    const transfer = Math.min(amount, space, Math.ceil(amount * flowSpeed));
+                    
+                    newGrid[downIdx] += transfer;
+                    newGrid[idx] -= transfer;
+                    amount = newGrid[idx];
+                }
+            }
 
-                // Проверяем соседние ячейки
-                for (let dx = -1; dx <= 1; dx++) {
-                    for (let dy = -1; dy <= 1; dy++) {
-                        const key = `${gx + dx},${gy + dy}`;
-                        const cell = grid[key];
-                        if (!cell) continue;
+            // 2. Если внизу занято, растекаемся в стороны и по диагонали
+            if (amount > 0) {
+                const dirs = [
+                    { dx: -1, dy: 1 }, // Вниз-влево
+                    { dx: 1, dy: 1 },  // Вниз-вправо
+                    { dx: -1, dy: 0 }, // Влево
+                    { dx: 1, dy: 0 }   // Вправо
+                ];
 
-                        for (const j of cell) {
-                            if (i >= j) continue;
+                // Случайный порядок сторон, чтобы вода не текла только влево
+                if (Math.random() > 0.5) {
+                    dirs[2].dx = 1; dirs[3].dx = -1;
+                }
+
+                for (let d of dirs) {
+                    if (amount <= 0) break;
+                    
+                    const nx = x + d.dx;
+                    const ny = y + d.dy;
+                    const nIdx = getIndex(nx, ny);
+                    
+                    if (nIdx !== -1) {
+                        const nAmount = newGrid[nIdx];
+                        
+                        let canFlow = false;
+                        if (d.dy === 1) {
+                            // Вниз-вбок течет, если есть место
+                            if (nAmount < maxWater) canFlow = true;
+                        } else {
+                            // По горизонтали течет, если сосед пустее
+                            if (nAmount < amount) canFlow = true;
+                        }
+
+                        if (canFlow) {
+                            const space = maxWater - nAmount;
+                            const factor = (d.dy === 1) ? 0.8 : 0.4; 
+                            const transfer = Math.min(amount, space, Math.ceil(amount * factor));
                             
-                            const p2 = particles[j];
-                            const ddx = p1.x - p2.x;
-                            const ddy = p1.y - p2.y;
-                            const distSq = ddx * ddx + ddy * ddy;
-
-                            if (distSq < minDistSq && distSq > 0) {
-                                const dist = Math.sqrt(distSq);
-                                const overlap = minDist - dist;
-                                const nx = ddx / dist;
-                                const ny = ddy / dist;
-
-                                // Разделяем частицы
-                                const force = overlap * 0.5;
-                                p1.x += nx * force;
-                                p1.y += ny * force;
-                                p2.x -= nx * force;
-                                p2.y -= ny * force;
-
-                                // Обмен импульсом
-                                const dvx = p1.vx - p2.vx;
-                                const dvy = p1.vy - p2.vy;
-                                const dvn = dvx * nx + dvy * ny;
-                                
-                                if (dvn > 0) {
-                                    const impulse = dvn * 0.5;
-                                    p1.vx -= nx * impulse;
-                                    p1.vy -= ny * impulse;
-                                    p2.vx += nx * impulse;
-                                    p2.vy += ny * impulse;
-                                }
+                            if (transfer > 0) {
+                                newGrid[nIdx] += transfer;
+                                newGrid[idx] -= transfer;
+                                amount = newGrid[idx];
                             }
                         }
                     }
                 }
             }
         }
+    }
 
-        canvas.addEventListener('mousedown', e => {
-            if (e.button === 0) mouse.leftDown = true;
-            if (e.button === 2) mouse.rightDown = true;
-            updateMouse(e);
-        });
-        canvas.addEventListener('mouseup', e => {
-            if (e.button === 0) mouse.leftDown = false;
-            if (e.button === 2) mouse.rightDown = false;
-        });
-        canvas.addEventListener('mousemove', updateMouse);
-        canvas.addEventListener('contextmenu', e => e.preventDefault());
+    // Обновляем основной грид
+    grid.set(newGrid);
+    
+    // Статистика
+    const maxTotal = cols * rows * maxWater;
+    const percent = ((totalWater / maxTotal) * 100).toFixed(2);
+    countSpan.innerText = percent;
+}
 
-        function updateMouse(e) {
-            mouse.x = e.clientX;
-            mouse.y = e.clientY;
+function handleInput() {
+    const cx = Math.floor(mouse.x / scale);
+    const cy = Math.floor(mouse.y / scale);
+    const r = brushSize;
+
+    for (let y = -r; y <= r; y++) {
+        for (let x = -r; x <= r; x++) {
+            if (x*x + y*y > r*r) continue;
+            
+            const nx = cx + x;
+            const ny = cy + y;
+            const idx = getIndex(nx, ny);
+            
+            if (idx !== -1) {
+                if (mouse.leftDown) {
+                    grid[idx] = Math.min(maxWater, grid[idx] + 40);
+                } else if (mouse.rightDown) {
+                    grid[idx] = 0;
+                }
+            }
         }
+    }
+}
 
-        function loop() {
-            ctx.clearRect(0, 0, width, height);
+function render() {
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, width, height);
 
-            // Спавн (ЛКМ)
-            if (mouse.leftDown && particles.length < MAX_PARTICLES) {
-                for (let i = 0; i < SPAWN_RATE; i++) {
-                    if (particles.length >= MAX_PARTICLES) break;
-                    const offsetX = (Math.random() - 0.5) * 25;
-                    const offsetY = (Math.random() - 0.5) * 25;
-                    particles.push(new Particle(mouse.x + offsetX, mouse.y + offsetY));
-                }
+    for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+            const idx = y * cols + x;
+            const val = grid[idx];
+            
+            if (val > 0) {
+                const ratio = val / maxWater;
+                const r = Math.floor(20 + ratio * 30);
+                const g = Math.floor(100 + ratio * 80);
+                const b = 255;
+                
+                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                ctx.fillRect(x * scale, y * scale, scale, scale + 0.5);
             }
-
-            // Удаление (ПКМ)
-            if (mouse.rightDown) {
-                for (let i = particles.length - 1; i >= 0; i--) {
-                    const p = particles[i];
-                    const dx = p.x - mouse.x;
-                    const dy = p.y - mouse.y;
-                    if (dx*dx + dy*dy < REMOVE_RADIUS * REMOVE_RADIUS) {
-                        particles.splice(i, 1);
-                    }
-                }
-            }
-
-            // Физика: несколько подшагов для стабильности
-            const substeps = 2;
-            for (let s = 0; s < substeps; s++) {
-                resolveCollisions();
-                for (const p of particles) {
-                    p.update();
-                }
-            }
-
-            // Отрисовка
-            for (const p of particles) {
-                p.draw();
-            }
-
-            countSpan.textContent = particles.length;
-            requestAnimationFrame(loop);
         }
+    }
+}
 
-        loop();
-    </script>
+function loop() {
+    handleInput();
+    updatePhysics();
+    render();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
 </body>
 </html>
